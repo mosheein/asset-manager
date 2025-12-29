@@ -1,0 +1,243 @@
+.warning {
+  background-color: #fff3cd;
+  color: #856404;
+  padding: 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+}
+
+.warning ul {
+  margin-top: 0.5rem;
+  margin-left: 1.5rem;
+}
+
+.warning li {
+  margin-bottom: 0.25rem;
+}
+
+.header-actions {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.history-group {
+  margin-bottom: 2rem;
+}
+
+.history-group h3 {
+  margin-bottom: 1rem;
+  color: #2c3e50;
+}
+
+.preview-card {
+  border: 2px solid #3498db;
+  background-color: #f0f8ff;
+}
+
+.preview-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background-color: white;
+  border-radius: 4px;
+  font-size: 1.1rem;
+}
+
+.preview-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  justify-content: flex-end;
+}
+
+.asset-type-groups {
+  margin-top: 1rem;
+}
+
+.asset-type-group {
+  margin-bottom: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.asset-type-header {
+  display: flex;
+  align-items: center;
+  padding: 1rem;
+  background-color: #f8f9fa;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s;
+  gap: 0.75rem;
+}
+
+.asset-type-header:hover {
+  background-color: #e9ecef;
+}
+
+.expander {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 1.2rem;
+  font-weight: bold;
+  color: #3498db;
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.asset-type-name {
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: #2c3e50;
+  flex: 1;
+}
+
+.asset-type-percentage {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+}
+
+.asset-type-percentage strong {
+  color: #2c3e50;
+  font-size: 1.1rem;
+}
+
+.asset-type-count {
+  color: #7f8c8d;
+  font-size: 0.875rem;
+  font-weight: normal;
+}
+
+.asset-type-content {
+  padding: 0;
+  background-color: white;
+}
+
+.asset-type-content .table {
+  margin: 0;
+  border-top: 1px solid #ddd;
+  width: 100%;
+}
+
+.asset-type-content .table thead {
+  background-color: #f8f9fa;
+}
+
+/* Remove left padding and align everything to the left */
+.asset-type-content .table th,
+.asset-type-content .table td {
+  padding-left: 0.75rem !important;
+  text-align: left;
+}
+
+.asset-type-content .table th:first-child,
+.asset-type-content .table td:first-child {
+  padding-left: 0.75rem !important;
+}
+
+/* Ensure asset type groups don't have excessive indentation */
+.asset-type-groups {
+  margin-top: 1rem;
+  padding: 0;
+  margin-left: 0;
+}
+
+.asset-type-group {
+  margin-bottom: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-left: 0;
+}
+
+/* Reduce padding on card when it contains asset-type-groups */
+.card:has(.asset-type-groups) {
+  padding-left: 0.5rem;
+  padding-right: 1.5rem;
+}
+
+/* Ensure asset-type-header is left-aligned */
+.asset-type-header {
+  padding-left: 0.75rem !important;
+}
+
+.warning ul {
+  margin-top: 0.5rem;
+  margin-left: 1.5rem;
+}
+
+.warning li {
+  margin-bottom: 0.25rem;
+}
+
+.target-summary {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  text-align: right;
+}
+
+.header-actions {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.upload-button {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background-color: #27ae60;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background-color 0.2s;
+}
+
+.upload-button:hover {
+  background-color: #229954;
+}
+
+.upload-button input[type="file"] {
+  display: none;
+}
+
+.upload-button:has(input:disabled) {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
+.history-group {
+  margin-bottom: 2rem;
+}
+
+.history-group h3 {
+  margin-bottom: 0.5rem;
+  color: #2c3e50;
+  font-size: 1.1rem;
+}
+
+/* ISIN links to justETF */
+.asset-type-content .table td a {
+  color: #3498db;
+  text-decoration: underline;
+  transition: color 0.2s;
+}
+
+.asset-type-content .table td a:hover {
+  color: #2980b9;
+  text-decoration: underline;
+}
+

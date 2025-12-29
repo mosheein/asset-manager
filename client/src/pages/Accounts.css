@@ -1,0 +1,35 @@
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.page-header h1 {
+  color: #2c3e50;
+}
+
+.upload-button {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background-color: #3498db;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background-color 0.2s;
+}
+
+.upload-button:hover {
+  background-color: #2980b9;
+}
+
+.upload-button input[type="file"] {
+  display: none;
+}
+
+.upload-button:has(input:disabled) {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
