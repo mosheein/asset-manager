@@ -471,6 +471,16 @@
   background-color: #fff3cd;
 }
 
+.holding-row.cash-holding {
+  background-color: #f8f9fa;
+  border-left: 3px solid #95a5a6;
+  font-style: italic;
+}
+
+.holding-row.cash-holding:hover {
+  background-color: #e9ecef;
+}
+
 .holding-row:last-child {
   border-bottom: none;
 }

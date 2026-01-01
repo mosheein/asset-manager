@@ -84,11 +84,14 @@ router.get('/', (req: Request, res: Response) => {
       }
     }
 
-    // Calculate total portfolio value
-    const totalValue = holdings.reduce((sum, h) => sum + h.value_usd, 0);
+    // Filter out CASH holdings - they shouldn't be part of rebalancing
+    const holdingsForRebalancing = holdings.filter(h => h.symbol.toUpperCase() !== 'CASH');
+    
+    // Calculate total portfolio value (excluding CASH - it's not an asset to rebalance)
+    const totalValue = holdingsForRebalancing.reduce((sum, h) => sum + h.value_usd, 0);
 
     // Calculate rebalancing plan
-    const plan = calculateRebalancing(holdings, targets, totalValue, toleranceValue, symbolMappings);
+    const plan = calculateRebalancing(holdingsForRebalancing, targets, totalValue, toleranceValue, symbolMappings);
 
     res.json(plan);
   } catch (error: any) {

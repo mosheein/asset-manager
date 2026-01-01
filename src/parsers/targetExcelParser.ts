@@ -6,6 +6,8 @@ export interface ExcelTargetRow {
   instrument: string;
   isin?: string;
   ticker?: string;
+  mainTicker?: string; // Support CSV format
+  otherTickers?: string[]; // Support CSV format
   targetPercentage: number;
 }
 
@@ -62,7 +64,7 @@ const VALID_CATEGORIES: Record<string, string[]> = {
   ],
 };
 
-export function parseTargetExcel(fileBuffer: Buffer): ParsedTargetsResult {
+export function parseTargetExcel(fileBuffer: Buffer, sheetName?: string): ParsedTargetsResult {
   try {
     const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
     
@@ -74,8 +76,18 @@ export function parseTargetExcel(fileBuffer: Buffer): ParsedTargetsResult {
       };
     }
     
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
+    // Use provided sheet name or default to first sheet
+    const targetSheetName = sheetName || workbook.SheetNames[0];
+    
+    if (!workbook.SheetNames.includes(targetSheetName)) {
+      return {
+        targets: [],
+        warnings: [],
+        errors: [`Sheet "${targetSheetName}" not found in Excel file. Available sheets: ${workbook.SheetNames.join(', ')}`],
+      };
+    }
+    
+    const worksheet = workbook.Sheets[targetSheetName];
     
     if (!worksheet) {
       return {
@@ -129,7 +141,14 @@ export function parseTargetExcel(fileBuffer: Buffer): ParsedTargetsResult {
         cell.includes('isin') || cell === 'isin'
       );
       headerMap['ticker'] = row.findIndex(cell => 
-        cell.includes('ticker') || cell.includes('symbol') || cell === 'ticker'
+        (cell.includes('ticker') || cell.includes('symbol') || cell === 'ticker') && 
+        !cell.includes('other')
+      );
+      headerMap['mainTicker'] = row.findIndex(cell => 
+        cell.includes('main ticker') || cell === 'main ticker'
+      );
+      headerMap['otherTickers'] = row.findIndex(cell => 
+        cell.includes('other ticker') || cell === 'other tickers'
       );
       headerMap['percentage'] = percentageIdx;
       break;
@@ -212,9 +231,25 @@ export function parseTargetExcel(fileBuffer: Buffer): ParsedTargetsResult {
     const isin = headerMap['isin'] >= 0 
       ? String(row[headerMap['isin']] || '').trim() || undefined
       : undefined;
-    const ticker = headerMap['ticker'] >= 0 
-      ? String(row[headerMap['ticker']] || '').trim() || undefined
+    
+    // Support both "ticker" and "mainTicker" column names
+    const tickerCol = headerMap['ticker'] >= 0 ? headerMap['ticker'] : 
+                      (headerMap['mainTicker'] !== undefined ? headerMap['mainTicker'] : -1);
+    const ticker = tickerCol >= 0
+      ? String(row[tickerCol] || '').trim() || undefined
       : undefined;
+    
+    // Parse other tickers if column exists
+    let otherTickers: string[] | undefined = undefined;
+    if (headerMap['otherTickers'] !== undefined && headerMap['otherTickers'] >= 0) {
+      const otherTickersStr = String(row[headerMap['otherTickers']] || '').trim();
+      if (otherTickersStr) {
+        otherTickers = otherTickersStr
+          .split(/[|,]/)
+          .map(t => t.trim())
+          .filter(t => t.length > 0);
+      }
+    }
 
     targets.push({
       assetType: normalizedAssetType,
@@ -222,6 +257,8 @@ export function parseTargetExcel(fileBuffer: Buffer): ParsedTargetsResult {
       instrument: instrument || '',
       isin: isin || undefined,
       ticker: ticker || undefined,
+      mainTicker: ticker || undefined, // Also set mainTicker for consistency
+      otherTickers: otherTickers,
       targetPercentage: percentage,
     });
   }

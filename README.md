@@ -25,17 +25,24 @@ npm install
 cd client && npm install
 ```
 
-2. Initialize database:
+2. Set up Google OAuth for local development (see [LOCAL_AUTH_SETUP.md](./LOCAL_AUTH_SETUP.md)):
+   - Create OAuth credentials in Google Cloud Console
+   - Create `.env` file with your credentials
+   - See [LOCAL_AUTH_SETUP.md](./LOCAL_AUTH_SETUP.md) for detailed instructions
+
+3. Initialize database:
 ```bash
 npm run init:db
 ```
 
-3. Start development server:
+4. Start development server:
 ```bash
 npm run dev
 ```
 
 The app will be available at `http://localhost:5173` (frontend) and `http://localhost:3001` (backend API).
+
+**Note**: Authentication is required. You'll be redirected to a login page where you can sign in with Google.
 
 ## Usage
 

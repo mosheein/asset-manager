@@ -1,9 +1,12 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
+import * as XLSX from 'xlsx';
 import { getDatabase } from '../db/database';
 import { TargetAllocation, TargetHistory } from '../db/schema';
 import { parseTargetExcel } from '../parsers/targetExcelParser';
+import { parseTargetCsv } from '../parsers/targetCsvParser';
 import { lookupTickerFromISIN, lookupTickerFromName, getBestTicker, getAllTickers, ISINLookupResult, lookupNameFromTicker, lookupNameFromISIN } from '../services/tickerLookup';
+import { validateTargets, TargetToValidate } from '../services/targetValidator';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -280,45 +283,71 @@ router.delete('/:id', (req: Request, res: Response) => {
   }
 });
 
-// Preview Excel file (parse but don't save)
+// Preview Excel/CSV file (parse but don't save)
 router.post('/upload-excel-preview', upload.single('excel'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       return res.status(400).json({ 
         error: 'No file uploaded',
-        errors: ['Please select an Excel file to upload'],
+        errors: ['Please select a file to upload'],
         warnings: []
       });
     }
 
     // Check file type
     const fileExtension = req.file.originalname.toLowerCase().split('.').pop();
-    if (fileExtension !== 'xlsx' && fileExtension !== 'xls') {
+    const isExcel = fileExtension === 'xlsx' || fileExtension === 'xls';
+    const isCsv = fileExtension === 'csv';
+    
+    if (!isExcel && !isCsv) {
       return res.status(400).json({ 
         error: 'Invalid file type',
-        errors: [`Expected Excel file (.xlsx or .xls), got: ${fileExtension}`],
+        errors: [`Expected Excel file (.xlsx or .xls) or CSV file (.csv), got: ${fileExtension}`],
         warnings: []
       });
     }
 
-    // Parse Excel file
+    // Parse file (Excel or CSV)
     let parsed;
+    let availableSheets: string[] = [];
+    let selectedSheet: string | undefined = undefined;
+    
     try {
-      parsed = parseTargetExcel(req.file.buffer);
+      if (isCsv) {
+        const csvText = req.file.buffer.toString('utf-8');
+        parsed = parseTargetCsv(csvText);
+      } else {
+        // For Excel, check if there are multiple sheets
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        availableSheets = workbook.SheetNames || [];
+        
+        // If user specified a sheet, use it; otherwise use first sheet
+        // Note: req.body.sheetName comes from FormData
+        const requestedSheetName = (req.body as any).sheetName;
+        selectedSheet = requestedSheetName || (availableSheets.length > 0 ? availableSheets[0] : undefined);
+        
+        parsed = parseTargetExcel(req.file.buffer, selectedSheet);
+      }
     } catch (parseError: any) {
-      console.error('Error parsing Excel file:', parseError);
+      console.error(`Error parsing ${isCsv ? 'CSV' : 'Excel'} file:`, parseError);
       return res.status(400).json({ 
-        error: 'Failed to parse Excel file',
-        errors: [parseError.message || 'Invalid Excel file format'],
-        warnings: []
+        error: `Failed to parse ${isCsv ? 'CSV' : 'Excel'} file`,
+        errors: [parseError.message || `Invalid ${isCsv ? 'CSV' : 'Excel'} file format`],
+        warnings: [],
+        availableSheets: isCsv ? [] : availableSheets,
+        selectedSheet: selectedSheet,
+        hasMultipleSheets: !isCsv && availableSheets.length > 1,
       });
     }
 
     if (parsed.errors.length > 0) {
       return res.status(400).json({ 
-        error: 'Excel file parsing errors',
+        error: `${isCsv ? 'CSV' : 'Excel'} file parsing errors`,
         errors: parsed.errors,
         warnings: parsed.warnings,
+        availableSheets: isCsv ? [] : availableSheets,
+        selectedSheet: selectedSheet,
+        hasMultipleSheets: !isCsv && availableSheets.length > 1,
       });
     }
 
@@ -326,72 +355,92 @@ router.post('/upload-excel-preview', upload.single('excel'), async (req: Request
     if (parsed.targets.length === 0) {
       return res.status(400).json({ 
         error: 'No targets found',
-        errors: ['Excel file does not contain any valid target allocations'],
+        errors: [`${isCsv ? 'CSV' : 'Excel'} file does not contain any valid target allocations`],
         warnings: parsed.warnings,
+        availableSheets: isCsv ? [] : availableSheets,
+        selectedSheet: selectedSheet,
+        hasMultipleSheets: !isCsv && availableSheets.length > 1,
       });
     }
 
     // Calculate total percentage
     const totalPercentage = parsed.targets.reduce((sum, t) => sum + t.targetPercentage, 0);
 
-    // Format targets for preview and lookup missing tickers
+    // Convert parsed targets to validation format
+    // Handle both Excel and CSV formats
+    const targetsToValidate: TargetToValidate[] = parsed.targets.map((t, index) => {
+      // CSV format uses mainTicker, Excel format uses ticker
+      const mainTicker = (t as any).mainTicker || (t as any).ticker || undefined;
+      // CSV format has otherTickers array, Excel might have it too
+      const otherTickers = (t as any).otherTickers || undefined;
+      
+      return {
+        assetType: t.assetType,
+        assetCategory: t.assetCategory,
+        instrument: (t as any).instrument || undefined,
+        isin: t.isin,
+        mainTicker: mainTicker,
+        otherTickers: otherTickers,
+        targetPercentage: t.targetPercentage,
+        rowNumber: index + 2, // +2 because index is 0-based and we skip header
+      };
+    });
+
+    // STEP 1: Validate all targets (check if tickers/ISINs exist)
+    const validation = await validateTargets(targetsToValidate);
+
+    // STEP 2: Format targets for preview
     const previewTargets = [];
-    const tickerLookups: Array<{ index: number; lookupResult: ISINLookupResult; multipleTickers: boolean }> = [];
+    const autoDetectSuggestions: Array<{ index: number; field: string; suggestions: any }> = [];
     
-    for (let i = 0; i < parsed.targets.length; i++) {
-      const t = parsed.targets[i];
-      let ticker = t.ticker || null;
-      let needsLookup = false;
+    for (let i = 0; i < targetsToValidate.length; i++) {
+      const t = targetsToValidate[i];
+      const valResult = validation.results[i].validation;
+      
+      let ticker = t.mainTicker || null;
+      let alternativeTickers: string[] = []; // Will be populated from auto-detect if needed
+      let needsAutoDetect = false;
       let lookupResult: ISINLookupResult | null = null;
       
-      // If ticker is missing but ISIN is provided, try to lookup
-      if (!ticker && t.isin) {
-        try {
-          lookupResult = await lookupTickerFromISIN(t.isin);
-          if (lookupResult) {
-            const bestTicker = getBestTicker(lookupResult);
-            if (bestTicker) {
-              ticker = bestTicker;
-              // If multiple tickers found, mark for user confirmation
-              if (lookupResult.tickers.length > 1) {
-                tickerLookups.push({
-                  index: i,
-                  lookupResult,
-                  multipleTickers: true,
-                });
-              }
+      // If data is missing, prepare auto-detect suggestions (but don't apply yet)
+      if (valResult.needsAutoDetect) {
+        needsAutoDetect = true;
+        
+        // If ticker is missing but ISIN is provided, prepare lookup
+        if (!ticker && t.isin) {
+          try {
+            lookupResult = await lookupTickerFromISIN(t.isin);
+            if (lookupResult) {
+              autoDetectSuggestions.push({
+                index: i,
+                field: 'ticker',
+                suggestions: lookupResult.tickers,
+              });
             }
-          } else {
-            needsLookup = true;
+          } catch (error) {
+            console.warn(`Failed to lookup ticker for ISIN ${t.isin}:`, error);
           }
-        } catch (error) {
-          console.warn(`Failed to lookup ticker for ISIN ${t.isin}:`, error);
-          needsLookup = true;
+        }
+        
+        // If still no ticker and instrument name is provided, try name lookup
+        if (!ticker && t.instrument) {
+          try {
+            const nameTickers = await lookupTickerFromName(t.instrument);
+            if (nameTickers && nameTickers.length > 0) {
+              autoDetectSuggestions.push({
+                index: i,
+                field: 'ticker',
+                suggestions: nameTickers,
+              });
+            }
+          } catch (error) {
+            console.warn(`Failed to lookup ticker for instrument ${t.instrument}:`, error);
+          }
         }
       }
       
-      // If still no ticker and instrument name is provided, try name lookup
-      if (!ticker && t.instrument && needsLookup) {
-        try {
-          const nameTickers = await lookupTickerFromName(t.instrument);
-          if (nameTickers && nameTickers.length > 0) {
-            ticker = nameTickers[0].ticker;
-            if (nameTickers.length > 1) {
-              // Multiple matches from name - less reliable, but we'll use first one
-              parsed.warnings.push(
-                `Row ${i + 1}: Multiple tickers found for "${t.instrument}", using ${ticker}. Please verify.`
-              );
-            }
-          }
-        } catch (error) {
-          console.warn(`Failed to lookup ticker for instrument ${t.instrument}:`, error);
-        }
-      }
-      
-      const tickerLookup = tickerLookups.find(tl => tl.index === i);
-      const allTickers = tickerLookup ? getAllTickers(tickerLookup.lookupResult) : (ticker ? [ticker] : []);
-      const primaryTicker = tickerLookup ? getBestTicker(tickerLookup.lookupResult) : ticker;
-      const alternativeTickers = allTickers.filter(t => t !== primaryTicker);
+      // Get other tickers from CSV format if available
+      const otherTickersFromCsv = t.otherTickers || [];
       
       previewTargets.push({
         asset_type: t.assetType,
@@ -399,25 +448,40 @@ router.post('/upload-excel-preview', upload.single('excel'), async (req: Request
         target_percentage: t.targetPercentage,
         instrument: t.instrument || null,
         isin: t.isin || null,
-        ticker: primaryTicker || ticker,
-        alternative_tickers: alternativeTickers.length > 0 ? alternativeTickers : null,
-        _needsTickerConfirmation: tickerLookups.some(tl => tl.index === i),
-        _tickerOptions: tickerLookup?.lookupResult.tickers || null,
+        ticker: ticker || null,
+        // Combine CSV otherTickers with auto-detected alternatives
+        alternative_tickers: otherTickersFromCsv.length > 0 
+          ? otherTickersFromCsv 
+          : (alternativeTickers.length > 0 ? alternativeTickers : null),
+        _needsAutoDetect: needsAutoDetect,
+        _missingFields: valResult.missingFields,
+        _validationErrors: valResult.errors,
+        _validationWarnings: valResult.warnings,
+        _autoDetectSuggestions: autoDetectSuggestions.find(s => s.index === i)?.suggestions || null,
       });
     }
 
+    // Combine all validation warnings and errors
+    const allValidationErrors = validation.results.flatMap(r => r.validation.errors);
+    const allValidationWarnings = [
+      ...parsed.warnings,
+      ...validation.results.flatMap(r => r.validation.warnings),
+    ];
+
+    const hasMultipleSheets = !isCsv && availableSheets.length > 1;
+    
     res.json({
       targets: previewTargets,
-      warnings: parsed.warnings,
-      errors: parsed.errors,
+      warnings: allValidationWarnings,
+      errors: allValidationErrors,
       totalPercentage,
       targetsCount: previewTargets.length,
-      tickerLookups: tickerLookups.length > 0 ? tickerLookups.map(tl => ({
-        index: tl.index,
-        isin: parsed.targets[tl.index].isin,
-        instrument: parsed.targets[tl.index].instrument,
-        tickers: tl.lookupResult.tickers,
-      })) : [],
+      validationSummary: validation.summary,
+      allComplete: validation.allComplete,
+      needsAutoDetect: validation.summary.needsAutoDetect > 0,
+      availableSheets: isCsv ? [] : availableSheets,
+      selectedSheet: selectedSheet,
+      hasMultipleSheets: hasMultipleSheets,
     });
   } catch (error: any) {
     console.error('Unexpected error parsing Excel:', error);
@@ -474,13 +538,21 @@ router.post('/commit-excel', async (req: Request, res: Response) => {
       
       for (let i = 0; i < targetList.length; i++) {
         const target = targetList[i];
-        // Extract symbol from ticker if available
-        const symbol = (target as any).ticker || (target as any).symbol || null;
-        const alternativeTickers = (target as any).alternative_tickers || null;
+        // Extract symbol from ticker if available (support both "ticker" and "mainTicker" fields)
+        const symbol = (target as any).ticker || (target as any).mainTicker || (target as any).symbol || null;
+        
+        // Handle alternative tickers - can come from "alternative_tickers" or "otherTickers"
+        let alternativeTickers: string[] = [];
+        if ((target as any).alternative_tickers && Array.isArray((target as any).alternative_tickers)) {
+          alternativeTickers = (target as any).alternative_tickers;
+        } else if ((target as any).otherTickers && Array.isArray((target as any).otherTickers)) {
+          alternativeTickers = (target as any).otherTickers;
+        }
+        
         const isin = (target as any).isin || null;
         
         // Store alternative tickers as JSON string
-        const alternativeTickersJson = alternativeTickers && Array.isArray(alternativeTickers) && alternativeTickers.length > 0
+        const alternativeTickersJson = alternativeTickers.length > 0
           ? JSON.stringify(alternativeTickers)
           : null;
         

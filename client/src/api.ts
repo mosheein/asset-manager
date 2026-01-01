@@ -147,9 +147,12 @@ export const targetsApi = {
   update: (id: number, data: { target_percentage: number }) =>
     axios.put<TargetAllocation>(`${API_BASE}/targets/${id}`, data),
   delete: (id: number) => axios.delete(`${API_BASE}/targets/${id}`),
-  uploadExcelPreview: (file: File) => {
+  uploadExcelPreview: (file: File, sheetName?: string) => {
     const formData = new FormData();
     formData.append('excel', file);
+    if (sheetName) {
+      formData.append('sheetName', sheetName);
+    }
     return axios.post<{
       targets: Array<{
         asset_type: string;
@@ -160,6 +163,16 @@ export const targetsApi = {
         ticker?: string | null;
         alternative_tickers?: string[] | null;
         _needsTickerConfirmation?: boolean;
+        _needsAutoDetect?: boolean;
+        _missingFields?: string[];
+        _validationErrors?: string[];
+        _validationWarnings?: string[];
+        _autoDetectSuggestions?: Array<{
+          ticker: string;
+          exchange?: string;
+          name?: string;
+          confidence: 'high' | 'medium' | 'low';
+        }> | null;
         _tickerOptions?: Array<{
           ticker: string;
           exchange?: string;
@@ -171,6 +184,17 @@ export const targetsApi = {
       errors: string[];
       totalPercentage: number;
       targetsCount: number;
+      validationSummary?: {
+        total: number;
+        valid: number;
+        complete: number;
+        needsAutoDetect: number;
+      };
+      allComplete?: boolean;
+      needsAutoDetect?: boolean;
+      availableSheets?: string[];
+      selectedSheet?: string;
+      hasMultipleSheets?: boolean;
       tickerLookups?: Array<{
         index: number;
         isin?: string;

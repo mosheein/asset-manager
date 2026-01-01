@@ -20,7 +20,18 @@ function Targets() {
       instrument?: string | null;
       isin?: string | null;
       ticker?: string | null;
+      alternative_tickers?: string[] | null;
       _needsTickerConfirmation?: boolean;
+      _needsAutoDetect?: boolean;
+      _missingFields?: string[];
+      _validationErrors?: string[];
+      _validationWarnings?: string[];
+      _autoDetectSuggestions?: Array<{
+        ticker: string;
+        exchange?: string;
+        name?: string;
+        confidence: 'high' | 'medium' | 'low';
+      }> | null;
       _tickerOptions?: Array<{
         ticker: string;
         exchange?: string;
@@ -31,6 +42,17 @@ function Targets() {
     warnings: string[];
     errors: string[];
     totalPercentage: number;
+    validationSummary?: {
+      total: number;
+      valid: number;
+      complete: number;
+      needsAutoDetect: number;
+    };
+    allComplete?: boolean;
+    needsAutoDetect?: boolean;
+    availableSheets?: string[];
+    selectedSheet?: string;
+    hasMultipleSheets?: boolean;
     tickerLookups?: Array<{
       index: number;
       isin?: string;
@@ -43,10 +65,12 @@ function Targets() {
       }>;
     }>;
   } | null>(null);
+  const [selectedSheet, setSelectedSheet] = useState<string | null>(null);
   const [tickerSelections, setTickerSelections] = useState<Map<number, string>>(new Map());
   const [committing, setCommitting] = useState(false);
   const [expandedAssetTypes, setExpandedAssetTypes] = useState<Set<string>>(new Set());
   const [expandedPreviewTypes, setExpandedPreviewTypes] = useState<Set<string>>(new Set());
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [formData, setFormData] = useState({
     asset_type: '',
     asset_category: '',
@@ -131,35 +155,101 @@ function Targets() {
     }
   };
 
-  const handleExcelUpload = async (file: File) => {
+  const handleExcelUpload = async (file: File, sheetName?: string) => {
     try {
       setUploading(true);
       setError(null);
       setWarnings([]);
-      setPreviewData(null);
+      // Don't clear previewData if just changing sheet
+      if (!sheetName) {
+        setPreviewData(null);
+      }
+      // Always store the file so we can re-upload with different sheet
+      setUploadedFile(file);
       
-      const response = await targetsApi.uploadExcelPreview(file);
+      const response = await targetsApi.uploadExcelPreview(file, sheetName);
+      
+      // Store sheet info - check if we have multiple sheets
+      const hasMultipleSheets = response.data.availableSheets && response.data.availableSheets.length > 1;
+      if (hasMultipleSheets) {
+        setSelectedSheet(response.data.selectedSheet || response.data.availableSheets[0]);
+      }
       
       // Show errors if any (from parsing)
       if (response.data.errors && response.data.errors.length > 0) {
-        setError('Excel parsing errors:\n' + response.data.errors.join('\n'));
+        setError('Parsing errors:\n' + response.data.errors.join('\n'));
+        // ALWAYS show preview with sheet selector if multiple sheets available, even with errors
+        if (hasMultipleSheets) {
+          setPreviewData({
+            targets: [],
+            warnings: response.data.warnings || [],
+            errors: response.data.errors || [],
+            totalPercentage: 0,
+            tickerLookups: [],
+            validationSummary: undefined,
+            allComplete: false,
+            needsAutoDetect: false,
+            availableSheets: response.data.availableSheets || [],
+            selectedSheet: response.data.selectedSheet || response.data.availableSheets[0],
+            hasMultipleSheets: true,
+          });
+        } else {
+          // Even with single sheet, show preview if we have sheet info (for debugging)
+          if (response.data.availableSheets && response.data.availableSheets.length > 0) {
+            setPreviewData({
+              targets: [],
+              warnings: response.data.warnings || [],
+              errors: response.data.errors || [],
+              totalPercentage: 0,
+              tickerLookups: [],
+              validationSummary: undefined,
+              allComplete: false,
+              needsAutoDetect: false,
+              availableSheets: response.data.availableSheets || [],
+              selectedSheet: response.data.selectedSheet || response.data.availableSheets[0],
+              hasMultipleSheets: false,
+            });
+          }
+        }
         return;
       }
       
       // Show preview
-      setPreviewData({
+      const previewDataUpdate = {
         targets: response.data.targets,
         warnings: response.data.warnings || [],
         errors: response.data.errors || [],
         totalPercentage: response.data.totalPercentage,
         tickerLookups: response.data.tickerLookups || [],
-      });
+        validationSummary: response.data.validationSummary,
+        allComplete: response.data.allComplete,
+        needsAutoDetect: response.data.needsAutoDetect,
+        availableSheets: response.data.availableSheets || [],
+        selectedSheet: response.data.selectedSheet,
+        hasMultipleSheets: response.data.hasMultipleSheets || false,
+      };
+      
+      setPreviewData(previewDataUpdate);
+      
+      // Always set selectedSheet if available, even for single sheet files
+      if (response.data.selectedSheet) {
+        setSelectedSheet(response.data.selectedSheet);
+      } else if (response.data.availableSheets && response.data.availableSheets.length > 0) {
+        setSelectedSheet(response.data.availableSheets[0]);
+      }
       
       // Initialize ticker selections for targets with detected tickers
       const selections = new Map<number, string>();
       response.data.targets.forEach((target: any, index: number) => {
         if (target.ticker) {
           selections.set(index, target.ticker);
+        }
+        // If auto-detect suggestions exist, pre-select the first one
+        if (target._autoDetectSuggestions && target._autoDetectSuggestions.length > 0) {
+          const firstSuggestion = target._autoDetectSuggestions[0];
+          if (firstSuggestion.ticker) {
+            selections.set(index, firstSuggestion.ticker);
+          }
         }
       });
       setTickerSelections(selections);
@@ -181,6 +271,33 @@ function Targets() {
       if (warnings.length > 0) {
         setWarnings(warnings);
       }
+      
+      // Even on error, show preview with sheet selector if multiple sheets are available
+      const errorResponse = err.response?.data;
+      if (errorResponse) {
+        const hasMultipleSheets = errorResponse.availableSheets && errorResponse.availableSheets.length > 1;
+        if (hasMultipleSheets || (errorResponse.availableSheets && errorResponse.availableSheets.length > 0)) {
+          setPreviewData({
+            targets: [],
+            warnings: errorResponse.warnings || [],
+            errors: errors,
+            totalPercentage: 0,
+            tickerLookups: [],
+            validationSummary: undefined,
+            allComplete: false,
+            needsAutoDetect: false,
+            availableSheets: errorResponse.availableSheets || [],
+            selectedSheet: errorResponse.selectedSheet || errorResponse.availableSheets?.[0],
+            hasMultipleSheets: errorResponse.hasMultipleSheets || (errorResponse.availableSheets && errorResponse.availableSheets.length > 1),
+          });
+          
+          if (errorResponse.selectedSheet) {
+            setSelectedSheet(errorResponse.selectedSheet);
+          } else if (errorResponse.availableSheets && errorResponse.availableSheets.length > 0) {
+            setSelectedSheet(errorResponse.availableSheets[0]);
+          }
+        }
+      }
     } finally {
       setUploading(false);
     }
@@ -195,20 +312,32 @@ function Targets() {
       
       // Update targets with selected tickers
       const targetsToCommit = previewData.targets.map((target, index) => {
+        // Use selected ticker from auto-detect if available, otherwise use existing ticker
         const selectedTicker = tickerSelections.get(index) || target.ticker;
-        const allTickers = target._tickerOptions 
-          ? target._tickerOptions.map(o => o.ticker)
-          : (target.ticker ? [target.ticker] : []);
-        const alternativeTickers = allTickers.filter(t => t !== selectedTicker);
+        
+        // Handle alternative tickers:
+        // 1. If target already has alternative_tickers (from CSV "Other Tickers" column), use those
+        // 2. Otherwise, use ticker options from lookup
+        let alternativeTickers: string[] = [];
+        if (target.alternative_tickers && Array.isArray(target.alternative_tickers)) {
+          // Use existing alternative tickers from CSV
+          alternativeTickers = target.alternative_tickers;
+        } else if (target._tickerOptions) {
+          // Use ticker options from lookup
+          const allTickers = target._tickerOptions.map(o => o.ticker);
+          alternativeTickers = allTickers.filter(t => t !== selectedTicker);
+        }
         
         return {
           asset_type: target.asset_type,
           asset_category: target.asset_category || null,
           target_percentage: target.target_percentage,
-          ticker: selectedTicker || target.ticker || null,
-          symbol: selectedTicker || target.ticker || target.symbol || null,
+          ticker: selectedTicker || null,
+          mainTicker: selectedTicker || null, // Support CSV format
+          symbol: selectedTicker || target.ticker || null,
           isin: target.isin || null,
           alternative_tickers: alternativeTickers.length > 0 ? alternativeTickers : null,
+          otherTickers: alternativeTickers.length > 0 ? alternativeTickers : null, // Support CSV format
         };
       });
       
@@ -315,10 +444,10 @@ function Targets() {
         <h1>Target Allocations</h1>
         <div className="header-actions">
           <label className="upload-button">
-            {uploading ? 'Uploading...' : 'Upload Excel'}
+            {uploading ? 'Uploading...' : 'Upload Targets (Excel/CSV)'}
             <input
               type="file"
-              accept=".xlsx,.xls"
+              accept=".xlsx,.xls,.csv"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) handleExcelUpload(file);
@@ -351,13 +480,86 @@ function Targets() {
       {previewData && (
         <div className="card preview-card">
           <h2>Preview - Review Before Committing</h2>
+          
+          {/* Sheet selector for Excel files with multiple sheets */}
+          {previewData.availableSheets && previewData.availableSheets.length > 1 && (
+            <div className="form-group" style={{ marginBottom: '1rem', padding: '1rem', backgroundColor: '#f8f9fa', borderRadius: '4px', border: '1px solid #dee2e6' }}>
+              <label><strong>Select Sheet to Import:</strong></label>
+              <select
+                value={selectedSheet || previewData.selectedSheet || previewData.availableSheets[0] || ''}
+                onChange={(e) => {
+                  const newSheet = e.target.value;
+                  setSelectedSheet(newSheet);
+                  setTickerSelections(new Map()); // Clear previous selections
+                  setError(null); // Clear previous errors
+                  setWarnings([]); // Clear previous warnings
+                  // Re-upload with selected sheet
+                  if (uploadedFile) {
+                    handleExcelUpload(uploadedFile, newSheet);
+                  } else {
+                    // Fallback: try to get from file input
+                    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+                    if (fileInput && fileInput.files && fileInput.files[0]) {
+                      setUploadedFile(fileInput.files[0]);
+                      handleExcelUpload(fileInput.files[0], newSheet);
+                    }
+                  }
+                }}
+                disabled={uploading}
+                style={{ 
+                  width: '100%', 
+                  padding: '0.5rem', 
+                  marginTop: '0.5rem',
+                  fontSize: '1rem',
+                  cursor: uploading ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {previewData.availableSheets.map((sheet) => (
+                  <option key={sheet} value={sheet}>
+                    {sheet} {sheet === (selectedSheet || previewData.selectedSheet) ? '(Selected)' : ''}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: '0.875rem', color: '#6c757d', marginTop: '0.5rem' }}>
+                {uploading ? (
+                  <span>Loading sheet...</span>
+                ) : (
+                  <span>Currently viewing: <strong>{selectedSheet || previewData.selectedSheet}</strong></span>
+                )}
+              </div>
+            </div>
+          )}
+          
           <div className="preview-summary">
             <div><strong>Total: {previewData.totalPercentage.toFixed(2)}%</strong></div>
             <div>{previewData.targets.length} targets</div>
+            {previewData.validationSummary && (
+              <div>
+                <span style={{ color: previewData.allComplete ? '#27ae60' : '#f39c12' }}>
+                  {previewData.validationSummary.complete}/{previewData.validationSummary.total} complete
+                </span>
+                {previewData.needsAutoDetect && (
+                  <span style={{ marginLeft: '1rem', color: '#e74c3c' }}>
+                    {previewData.validationSummary.needsAutoDetect} need auto-detect
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           {previewData.totalPercentage !== 100 && (
             <div className="warning">
               Total target allocation is {previewData.totalPercentage.toFixed(2)}%. It should equal 100%.
+            </div>
+          )}
+          {previewData.allComplete && previewData.validationSummary && (
+            <div className="success" style={{ backgroundColor: '#d4edda', color: '#155724', padding: '1rem', borderRadius: '4px', marginBottom: '1rem' }}>
+              ✓ All targets are complete and validated. Ready to commit.
+            </div>
+          )}
+          {previewData.needsAutoDetect && (
+            <div className="warning">
+              <strong>Some targets are missing data.</strong> The app can auto-detect missing tickers/ISINs. 
+              Review the suggestions below and approve to fill in missing data automatically.
             </div>
           )}
           <div className="asset-type-groups">
@@ -402,7 +604,9 @@ function Targets() {
                             <th>Name</th>
                             <th>Target %</th>
                             <th>ISIN</th>
-                            <th>Ticker</th>
+                            <th>Main Ticker</th>
+                            <th>Other Tickers</th>
+                            <th>Status</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -413,10 +617,12 @@ function Targets() {
                               t.target_percentage === target.target_percentage
                             );
                             const hasMultipleTickers = target._tickerOptions && target._tickerOptions.length > 1;
+                            const hasAutoDetectSuggestions = target._autoDetectSuggestions && target._autoDetectSuggestions.length > 0;
                             const selectedTicker = tickerSelections.get(globalIndex) || target.ticker;
+                            const needsAutoDetect = target._needsAutoDetect || false;
                             
                             return (
-                              <tr key={idx}>
+                              <tr key={idx} style={needsAutoDetect ? { backgroundColor: '#fff3cd' } : {}}>
                                 <td>{target.asset_category || '-'}</td>
                                 <td>{target.instrument || '-'}</td>
                                 <td><strong>{target.target_percentage.toFixed(2)}%</strong></td>
@@ -435,7 +641,38 @@ function Targets() {
                                   )}
                                 </td>
                                 <td>
-                                  {hasMultipleTickers ? (
+                                  {needsAutoDetect && hasAutoDetectSuggestions ? (
+                                    <div>
+                                      <select
+                                        value={selectedTicker || ''}
+                                        onChange={(e) => handleTickerSelection(globalIndex, e.target.value)}
+                                        style={{ 
+                                          padding: '0.25rem', 
+                                          fontSize: '0.9rem',
+                                          border: '1px solid #f39c12',
+                                          borderRadius: '4px',
+                                          backgroundColor: '#fff3cd',
+                                          width: '100%',
+                                          marginBottom: '0.25rem'
+                                        }}
+                                      >
+                                        <option value="">Select ticker (auto-detect)...</option>
+                                        {target._autoDetectSuggestions!.map((option, optIdx) => (
+                                          <option key={optIdx} value={option.ticker}>
+                                            {option.ticker} 
+                                            {option.exchange && ` (${option.exchange})`}
+                                            {option.name && ` - ${option.name}`}
+                                            {option.confidence === 'high' && ' ✓'}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      {target._missingFields && target._missingFields.length > 0 && (
+                                        <div style={{ fontSize: '0.75rem', color: '#e74c3c', marginTop: '0.25rem' }}>
+                                          Missing: {target._missingFields.join(', ')}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : hasMultipleTickers ? (
                                     <div>
                                       <select
                                         value={selectedTicker || ''}
@@ -461,26 +698,39 @@ function Targets() {
                                           </option>
                                         ))}
                                       </select>
-                                      {target.alternative_tickers && target.alternative_tickers.length > 0 && (
-                                        <div style={{ fontSize: '0.75rem', color: '#666', marginTop: '0.25rem' }}>
-                                          Also matches: {target.alternative_tickers.join(', ')}
-                                        </div>
-                                      )}
                                     </div>
                                   ) : (
                                     <div>
                                       <span>
                                         {target.ticker || '-'}
-                                        {target.ticker && !target._needsTickerConfirmation && (
+                                        {target.ticker && !needsAutoDetect && (
                                           <span style={{ color: '#4CAF50', marginLeft: '0.5rem' }}>✓</span>
                                         )}
                                       </span>
-                                      {target.alternative_tickers && target.alternative_tickers.length > 0 && (
-                                        <div style={{ fontSize: '0.75rem', color: '#666', marginTop: '0.25rem' }}>
-                                          Also matches: {target.alternative_tickers.join(', ')}
+                                      {target._validationWarnings && target._validationWarnings.length > 0 && (
+                                        <div style={{ fontSize: '0.75rem', color: '#f39c12', marginTop: '0.25rem' }}>
+                                          {target._validationWarnings.join('; ')}
                                         </div>
                                       )}
                                     </div>
+                                  )}
+                                </td>
+                                <td>
+                                  {target.alternative_tickers && target.alternative_tickers.length > 0 ? (
+                                    <div style={{ fontSize: '0.9rem' }}>
+                                      {target.alternative_tickers.join(', ')}
+                                    </div>
+                                  ) : (
+                                    '-'
+                                  )}
+                                </td>
+                                <td>
+                                  {needsAutoDetect ? (
+                                    <span style={{ color: '#e74c3c', fontSize: '0.85rem' }}>⚠ Needs Auto-Detect</span>
+                                  ) : target._validationErrors && target._validationErrors.length > 0 ? (
+                                    <span style={{ color: '#e74c3c', fontSize: '0.85rem' }}>⚠ Validation Errors</span>
+                                  ) : (
+                                    <span style={{ color: '#27ae60', fontSize: '0.85rem' }}>✓ Valid</span>
                                   )}
                                 </td>
                               </tr>
@@ -628,6 +878,7 @@ function Targets() {
                             <th>Category</th>
                             <th>Name</th>
                             <th>Symbol/Ticker</th>
+                            <th>Other Tickers</th>
                             <th>ISIN</th>
                             <th>Target %</th>
                             <th>Bucket</th>
@@ -637,11 +888,34 @@ function Targets() {
                         <tbody>
                           {groupedTargets[type].map((target) => {
                             const assetName = getAssetName(target);
+                            // Parse alternative_tickers if it's a string (JSON)
+                            let alternativeTickers: string[] = [];
+                            if (target.alternative_tickers) {
+                              if (typeof target.alternative_tickers === 'string') {
+                                try {
+                                  alternativeTickers = JSON.parse(target.alternative_tickers);
+                                } catch (e) {
+                                  // If parsing fails, treat as single ticker
+                                  alternativeTickers = [target.alternative_tickers];
+                                }
+                              } else if (Array.isArray(target.alternative_tickers)) {
+                                alternativeTickers = target.alternative_tickers;
+                              }
+                            }
                             return (
                               <tr key={target.id}>
                                 <td>{target.asset_category || '-'}</td>
                                 <td>{assetName || '-'}</td>
                                 <td>{target.symbol || '-'}</td>
+                                <td>
+                                  {alternativeTickers.length > 0 ? (
+                                    <span style={{ fontSize: '0.9rem', color: '#666' }}>
+                                      {alternativeTickers.join(', ')}
+                                    </span>
+                                  ) : (
+                                    '-'
+                                  )}
+                                </td>
                                 <td>{renderISIN(target)}</td>
                                 <td><strong>{target.target_percentage.toFixed(2)}%</strong></td>
                                 <td>{target.bucket || '-'}</td>

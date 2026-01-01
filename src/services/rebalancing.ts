@@ -46,8 +46,28 @@ export function calculateRebalancing(
   
   for (const target of targets) {
     if (target.symbol) {
-      // Ticker-level target
+      // Ticker-level target - map primary symbol
       tickerTargetMap.set(target.symbol.toUpperCase(), target.target_percentage);
+      
+      // Also map alternative tickers
+      let alternativeTickers: string[] = [];
+      if (target.alternative_tickers) {
+        if (typeof target.alternative_tickers === 'string') {
+          try {
+            alternativeTickers = JSON.parse(target.alternative_tickers);
+          } catch (e) {
+            alternativeTickers = [target.alternative_tickers];
+          }
+        } else if (Array.isArray(target.alternative_tickers)) {
+          alternativeTickers = target.alternative_tickers;
+        }
+      }
+      
+      for (const altTicker of alternativeTickers) {
+        if (altTicker) {
+          tickerTargetMap.set(String(altTicker).toUpperCase(), target.target_percentage);
+        }
+      }
     } else {
       // Category-level target
       const key = `${target.asset_type}|${target.asset_category || ''}`;
@@ -57,8 +77,14 @@ export function calculateRebalancing(
 
   // Calculate current allocations per ticker
   // Use mapped target symbol if mapping exists, otherwise use holding symbol
+  // EXCLUDE CASH from rebalancing calculations - it's not an asset to rebalance
   const tickerAllocations = new Map<string, { holding: Holding; allocation: number; mappedSymbol?: string }>();
   for (const holding of holdings) {
+    // Skip CASH holdings - they shouldn't be part of rebalancing
+    if (holding.symbol.toUpperCase() === 'CASH') {
+      continue;
+    }
+    
     const allocation = (holding.value_usd / totalValue) * 100;
     const holdingSymbol = holding.symbol.toUpperCase();
     const mappedSymbol = symbolMappings?.get(holdingSymbol);
@@ -88,10 +114,23 @@ export function calculateRebalancing(
     const targetSymbol = mappedSymbol || symbol;
     let targetPct = tickerTargetMap.get(targetSymbol);
     
+    // Also check if the holding symbol itself matches (in case mapping wasn't used)
+    if (targetPct === undefined) {
+      targetPct = tickerTargetMap.get(holding.symbol.toUpperCase());
+    }
+    
+    // Track whether we found any target (ticker or category)
+    let hasAnyTarget = targetPct !== undefined;
+    
     if (targetPct === undefined) {
       // Fallback to category-level target
       const categoryKey = `${holding.asset_type}|${holding.asset_category || ''}`;
-      targetPct = categoryTargetMap.get(categoryKey) || 0;
+      targetPct = categoryTargetMap.get(categoryKey);
+      if (targetPct !== undefined) {
+        hasAnyTarget = true;
+      } else {
+        targetPct = 0; // No target at all
+      }
     }
 
     const currentValue = holding.value_usd;
@@ -100,9 +139,15 @@ export function calculateRebalancing(
     const adjustmentNeeded = targetValue - currentValue;
     
     // Determine status
+    // Only show "needs_sell" if there's truly NO target (not even category-level)
+    // If targetPct is 0 but it came from a target (category or ticker), it's still a valid target (just set to 0%)
     let status: 'needs_buy' | 'needs_sell' | 'balanced';
-    if (targetPct === 0) {
-      status = 'balanced'; // No target defined
+    if (!hasAnyTarget && targetPct === 0 && currentPct > 0) {
+      // Truly no target set and we have holdings - needs to be sold
+      status = 'needs_sell';
+    } else if (targetPct === 0 && currentPct === 0) {
+      // No target and no holdings - balanced
+      status = 'balanced';
     } else if (Math.abs(deviation) <= tolerance) {
       status = 'balanced';
     } else if (deviation < 0) {
@@ -125,9 +170,27 @@ export function calculateRebalancing(
       assetType: holding.asset_type, // Include asset type for pie chart
     });
 
-    // Only create action if deviation exceeds tolerance and target is defined
-    if (targetPct > 0 && Math.abs(deviation) > tolerance) {
-      if (adjustmentNeeded > 0) {
+    // Create action if:
+    // 1. Target is defined and deviation exceeds tolerance, OR
+    // 2. Truly no target is set (not even category-level) but we have holdings (needs to be sold)
+    if ((targetPct > 0 && Math.abs(deviation) > tolerance) || (!hasAnyTarget && targetPct === 0 && currentPct > 0)) {
+      if (!hasAnyTarget && targetPct === 0 && currentPct > 0) {
+        // Truly no target set - sell all holdings
+        const sellAmount = currentValue;
+        totalSell += sellAmount;
+        const actionQuantity = sellAmount / holding.price;
+
+        actions.push({
+          symbol: holding.symbol,
+          action: 'SELL',
+          quantity: actionQuantity,
+          amount: sellAmount,
+          currentAllocation: currentPct,
+          targetAllocation: targetPct,
+          deviation: currentPct, // Full current allocation is deviation
+          status: 'needs_sell',
+        });
+      } else if (adjustmentNeeded > 0) {
         // Need to buy
         totalBuy += adjustmentNeeded;
         const actionQuantity = adjustmentNeeded / holding.price;

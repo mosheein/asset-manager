@@ -347,8 +347,31 @@ function Portfolio() {
                               </div>
                               {categoryGroup.holdings.map((holding) => {
                                 const currentPct = totalValue > 0 ? (holding.value_usd / totalValue) * 100 : 0;
+                                const isCash = holding.symbol.toUpperCase() === 'CASH';
                                 
-                                const tickerTarget = targets.find(t => t.symbol && t.symbol.toUpperCase() === holding.symbol.toUpperCase());
+                                // For CASH, don't match to ticker targets (it's not a ticker)
+                                // Only match to category-level targets
+                                const tickerTarget = !isCash 
+                                  ? targets.find(t => {
+                                      if (!t.symbol) return false;
+                                      // Check main symbol
+                                      if (t.symbol.toUpperCase() === holding.symbol.toUpperCase()) return true;
+                                      // Check alternative tickers
+                                      let alternativeTickers: string[] = [];
+                                      if (t.alternative_tickers) {
+                                        if (typeof t.alternative_tickers === 'string') {
+                                          try {
+                                            alternativeTickers = JSON.parse(t.alternative_tickers);
+                                          } catch (e) {
+                                            alternativeTickers = [t.alternative_tickers];
+                                          }
+                                        } else if (Array.isArray(t.alternative_tickers)) {
+                                          alternativeTickers = t.alternative_tickers;
+                                        }
+                                      }
+                                      return alternativeTickers.some(alt => alt.toUpperCase() === holding.symbol.toUpperCase());
+                                    })
+                                  : null;
                                 const categoryTarget = !tickerTarget 
                                   ? targets.find(t => 
                                       !t.symbol && 
@@ -369,14 +392,22 @@ function Portfolio() {
                                 return (
                                   <div 
                                     key={holding.id} 
-                                    className={`holding-row ${!hasTarget ? 'no-target' : ''}`}
+                                    className={`holding-row ${!hasTarget ? 'no-target' : ''} ${isCash ? 'cash-holding' : ''}`}
                                   >
                                     <div className="holding-col symbol-col">
-                                      <strong>{holding.symbol}</strong>
-                                      {isMapped && mappedTarget && (
-                                        <span className="mapped-indicator" title={`Mapped to ${mappedTarget.symbol || mappedTarget.asset_type}`}>
-                                          ⚠
-                                        </span>
+                                      {isCash ? (
+                                        <strong style={{ color: '#6c757d', fontStyle: 'italic' }}>
+                                          Cash ({holding.currency || 'USD'})
+                                        </strong>
+                                      ) : (
+                                        <>
+                                          <strong>{holding.symbol}</strong>
+                                          {isMapped && mappedTarget && (
+                                            <span className="mapped-indicator" title={`Mapped to ${mappedTarget.symbol || mappedTarget.asset_type}`}>
+                                              ⚠
+                                            </span>
+                                          )}
+                                        </>
                                       )}
                                     </div>
                                     <div className="holding-col quantity-col">{holding.quantity.toFixed(4)}</div>

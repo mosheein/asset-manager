@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: asset-manager
+    env: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /opt/render/project/src/portfolio.db
+    disk:
+      name: portfolio-db
+      mountPath: /opt/render/project/src
+      sizeGB: 1
